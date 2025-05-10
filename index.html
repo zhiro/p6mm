@@ -1,301 +1,41 @@
 <html>
-  <script src="https://cdn.jsdelivr.net/npm/ol@v10.5.0/dist/ol.js"></script>
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/ol@v10.5.0/ol.css"
-  />
 
-  <style>
-    * {
-      margin: 0;
-    }
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/ol@v10.5.0/dist/ol.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v10.5.0/ol.css">
+    <style>
+        * {
+            margin: 0;
+        }
 
-    #map {
-      position: absolute;
-      width: 100vw;
-      height: 100vh;
-    }
+        #map {
+            position: absolute;
+            width: 100vw;
+            height: 100vh;
+        }
 
-    #mic-id-wrapper {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      background: white;
-      padding: 10px;
-      border-radius: 4px;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-      z-index: 999999;
-    }
-  </style>
+        #mic-id-wrapper {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            z-index: 999999;
+        }
+    </style>
+</head>
 
-  <body>
+<body>
     <div id="map"></div>
     <div id="mic-id-wrapper">
-      <input type="text" id="mic-id" placeholder="Enter microphone ID" />
-      <button id="mic-id-save-button">Save Microphone ID</button>
+        <input type="text" id="mic-id" value="" />
+        <button id="clear-map-button">Clear Map</button>
+        <button id="simulate-sound-button">Simulate Sound</button>
     </div>
 
-    <script>
-      let map = null;
-      let events = [];
-      let myLocation = {
-        lat: 59.25777249995653,
-        lng: 24.22070703941916,
-      };
-      let myLocationMarker = null;
-      function initMap() {
-        map = new ol.Map({
-          target: "map",
-          layers: [
-            new ol.layer.Tile({
-              source: new ol.source.OSM(),
-            }),
-          ],
-          view: new ol.View({
-            center: ol.proj.fromLonLat([myLocation.lng, myLocation.lat]),
-            zoom: 16,
-          }),
-        });
+    <script type="module" src="/src/main.js"></script>
+</body>
 
-        map.on("click", function (evt) {
-          const coords = ol.proj.transform(
-            evt.coordinate,
-            "EPSG:3857",
-            "EPSG:4326"
-          );
-          myLocation = {
-            lat: coords[1],
-            lng: coords[0],
-          };
-          console.log("Location set to:", myLocation);
-          renderMyLocation(myLocation);
-        });
-      }
-
-      function renderMyLocation(latlng) {
-        console.log("Rendering location:", latlng.lat, latlng.lng);
-        if (myLocationMarker) {
-          map.removeLayer(myLocationMarker);
-        }
-        const point = new ol.geom.Point(
-          ol.proj.fromLonLat([latlng.lng, latlng.lat])
-        );
-        myLocationMarker = new ol.layer.Vector({
-          source: new ol.source.Vector({
-            features: [
-              new ol.Feature({
-                geometry: point,
-              }),
-            ],
-          }),
-          style: new ol.style.Style({
-            image: new ol.style.Circle({
-              radius: 5,
-              fill: new ol.style.Fill({
-                color: "#3388ff",
-              }),
-              stroke: new ol.style.Stroke({
-                color: "#fff",
-                width: 2,
-              }),
-            }),
-          }),
-        });
-        map.addLayer(myLocationMarker);
-      }
-
-      const savedMicId = localStorage.getItem("micId");
-      if (savedMicId) {
-        document.getElementById("mic-id").value = savedMicId;
-      }
-      function saveMicId() {
-        const micId = document.getElementById("mic-id").value;
-        localStorage.setItem("micId", micId);
-      }
-
-      function sendEvent(event) {
-        fetch("/data", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(event),
-        });
-      }
-      function listEvents() {
-        fetch("/data")
-          .then((response) => response.json())
-          .then((events) => {
-            console.log("Events:", events);
-          });
-      }
-
-      initMap();
-      renderMyLocation(myLocation);
-      document
-        .getElementById("mic-id-save-button")
-        .addEventListener("click", saveMicId);
-
-      // -----------------------------------------------------------------------------------------
-      // -----------------------------------------------------------------------------------------
-
-      function pingCircle(lat, lon) {
-        const radiusStart = 0;
-        const radiusEnd = 1000;
-        const duration = 1000;
-
-        const point = ol.proj.fromLonLat([lon, lat]);
-        const start = Date.now();
-
-        const pingFeature = new ol.Feature(
-          new ol.geom.Circle(point, radiusStart)
-        );
-        const pingLayer = new ol.layer.Vector({
-          source: new ol.source.Vector({ features: [pingFeature] }),
-          style: function (feature) {
-            const geometry = feature.getGeometry();
-            const radius = geometry.getRadius();
-            return new ol.style.Style({
-              fill: new ol.style.Fill({
-                color: "rgba(255,0,0,0.2)",
-              }),
-              stroke: new ol.style.Stroke({
-                color: "red",
-                width: 2,
-              }),
-              image: new ol.style.Circle({
-                radius: radius / 5000,
-                fill: new ol.style.Fill({ color: "red" }),
-              }),
-            });
-          },
-        });
-
-        map.addLayer(pingLayer);
-
-        function animate() {
-          const elapsed = Date.now() - start;
-          const progress = elapsed / duration;
-          const radius = radiusStart + (radiusEnd - radiusStart) * progress;
-
-          if (progress < 1) {
-            pingFeature.getGeometry().setRadius(radius);
-            requestAnimationFrame(animate);
-          } else {
-            map.removeLayer(pingLayer);
-          }
-        }
-
-        animate();
-      }
-
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then((stream) => {
-          const audioContext = new AudioContext();
-          const microphoneStream = audioContext.createMediaStreamSource(stream);
-          const analyser = audioContext.createAnalyser();
-          microphoneStream.connect(analyser);
-          analyser.fftSize = 4096;
-
-          const smoothingFactor = 0.5;
-
-          const bufferlength = analyser.frequencyBinCount;
-          const frequencyData = new Uint8Array(bufferlength);
-
-          const clapThreshold = 90;
-          const SILENCE_DURATION = 1000;
-
-          let isPrintingLine = false;
-          let smoothedRMS = 0;
-
-          let isFirstClapDetected = false;
-          let firstClapTS;
-
-          function listenToMic() {
-            analyser.getByteFrequencyData(frequencyData);
-            const rms = calculateRMS(frequencyData);
-
-            // smoothedRMS = smoothedRMS * smoothingFactor + rms * (1 - smoothingFactor);
-
-            if (!isFirstClapDetected && rms > clapThreshold) {
-              isFirstClapDetected = true;
-              firstClapTS = Date.now();
-              console.log("Clap detected at index:", firstClapTS, "RMS:", rms);
-              console.log("—————————————————————————————————————————————");
-            }
-
-            // if (smoothedRMS > clapThreshold) {
-            if (rms > clapThreshold) {
-              isPrintingLine = false;
-
-              console.log(
-                "Data:",
-                rms + "|" + getMilitaryUTC() + "|" + calcTimeFromFirst()
-              );
-            }
-
-            // if (smoothedRMS <= clapThreshold && !isPrintingLine) {
-            if (rms <= clapThreshold && !isPrintingLine) {
-              // Sound below threshold and line hasn't been printed yet
-              console.log("—————————————————————————————————————————————"); // Print your line
-              pingCircle(59.25777249995653, 24.22070703941916);
-
-              // myLocation = {
-              //   lat: 59.26122196819773,
-              //   lng: 24.227305273595796,
-              // };
-              // renderMyLocation(myLocation);
-              pingCircle(59.26122196819773, 24.227305273595796);
-              pingCircle(59.25564999859628, 24.228142122808443);
-              isPrintingLine = true;
-              highestRMS = 0;
-              highestRMSIndex = -1;
-              rmsValues = [];
-            }
-
-            requestAnimationFrame(listenToMic);
-          }
-
-          console.log("pingcirlce: ", typeof pingCircle);
-          listenToMic();
-
-          function getMilitaryUTC() {
-            const now = Date.now();
-            const date = new Date(now);
-
-            const hours = date.getHours();
-            const minutes = date.getMinutes();
-            const seconds = date.getSeconds();
-            const milliseconds = date.getMilliseconds();
-
-            // Format with leading zeros
-            const formattedHours = String(hours).padStart(2, "0");
-            const formattedMinutes = String(minutes).padStart(2, "0");
-            const formattedSeconds = String(seconds).padStart(2, "0");
-            const formattedMilliseconds = String(milliseconds).padStart(3, "0"); // Pad to 3 digits for milliseconds
-
-            return `${formattedHours}:${formattedMinutes}:${formattedSeconds}${formattedMilliseconds}`;
-          }
-
-          function calculateRMS(dataArray) {
-            let sumOfSquares = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              sumOfSquares += dataArray[i] * dataArray[i];
-            }
-            return Math.sqrt(sumOfSquares / dataArray.length);
-          }
-
-          function calcTimeFromFirst() {
-            return Date.now() - firstClapTS;
-          }
-        })
-        .catch((error) => {
-          console.error("Error getting user media:", error);
-        });
-
-      // -----------------------------------------------------------------------------------------
-      // -----------------------------------------------------------------------------------------
-    </script>
-  </body>
 </html>

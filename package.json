@@ -1,0 +1,17 @@
+{
+  "name": "vite-html-project",
+  "version": "1.0.0",
+  "description": "A Vite project to serve HTML files for development.",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vite": "^4.0.0"
+  },
+  "author": "",
+  "license": "ISC"
+}
