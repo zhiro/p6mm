@@ -1,0 +1,1027 @@
+<html>
+  <head>
+    <script src="https://cdn.jsdelivr.net/npm/ol@v10.5.0/dist/ol.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/ol@v10.5.0/ol.css"
+    />
+    <style>
+      * {
+        margin: 0;
+      }
+
+      #map {
+        position: absolute;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #mic-id-wrapper {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 4px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        z-index: 999999;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="map"></div>
+    <div id="mic-id-wrapper">
+      <button id="clear-map-button">Clear Map</button>
+      <button id="simulate-sound-button">Simulate Sound</button>
+      <!-- <button id="sound-source-button">Add BOOM</button> -->
+    </div>
+    <div
+      style="
+        position: absolute;
+        top: 60px;
+        left: 10px;
+        background: white;
+        padding: 10px;
+      "
+    >
+      <label for="clap-threshold">Clap Threshold:</label>
+      <input type="range" id="clap-threshold" min="0" max="100" value="50" />
+
+      <span id="threshold-value">50</span>
+    </div>
+    <div
+      style="
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        width: 300px;
+        height: 20px;
+        background: #ddd;
+        border: 1px solid #ccc;
+      "
+    >
+      <div
+        class="vu-level"
+        style="height: 100%; width: 0%; background: green"
+      ></div>
+      <div
+        class="threshold-line"
+        style="
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 2px;
+          background: red;
+        "
+      ></div>
+    </div>
+
+    <script>
+      function Measurement(microphone, timeDifference) {
+        this.microphone = microphone; // Microphone object
+        this.timeDifference = timeDifference; // Time difference in seconds
+      }
+
+      // Microphone object
+      function Microphone(id, lat, lon) {
+        this.id = id;
+        this.lat = lat;
+        this.lon = lon;
+      }
+
+      // Sound event data
+      function SoundEvent(timestamps) {
+        this.timestamps = timestamps; // Object: { micId: timestamp }
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        let map = null;
+        let events = [];
+        let savedMicId = localStorage.getItem("micId");
+
+        let micSource = null; // Vector source for microphone markers
+        let micLayer = null; // Layer for microphone markers
+        let soundSource = null;
+        let soundLayer = null;
+
+        let soundEventTimestamps = {}; // Store timestamps for each microphone
+        let temperature = 20; //
+        let microphones = []; // Array to store microphone data
+
+        // hardcoded
+        // let soundLat = 59.25777249995653;
+        // let soundLon = 24.22070703941916;
+        let soundLat = 0;
+        let soundLon = 0;
+
+        const micStyle = new ol.style.Style({
+          text: new ol.style.Text({
+            font: "13px Calibri,sans-serif",
+            offsetY: -12,
+          }),
+          image: new ol.style.Circle({
+            radius: 5,
+            fill: new ol.style.Fill({
+              color: "red",
+            }),
+            stroke: new ol.style.Stroke({
+              color: "black",
+              width: 2,
+            }),
+          }),
+        });
+
+        const soundStyle = new ol.style.Style({
+          text: new ol.style.Text({
+            font: "13px Calibri,sans-serif",
+            offsetY: -12,
+          }),
+          image: new ol.style.Circle({
+            radius: 7,
+            fill: new ol.style.Fill({
+              color: "green", // Sound source marker color
+            }),
+            stroke: new ol.style.Stroke({
+              color: "black",
+              width: 2,
+            }),
+          }),
+        });
+
+        const style = [micStyle, soundStyle];
+
+        let myLocation = {
+          lat: 59.25777249995653,
+          lng: 24.22070703941916,
+        };
+
+        function initMap() {
+          map = new ol.Map({
+            target: "map",
+            layers: [
+              new ol.layer.Tile({
+                source: new ol.source.OSM(),
+              }),
+            ],
+            view: new ol.View({
+              center: ol.proj.fromLonLat([myLocation.lng, myLocation.lat]),
+              zoom: 12,
+            }),
+          });
+
+          // Create the vector source and layer once
+          micSource = new ol.source.Vector();
+          micLayer = new ol.layer.Vector({
+            source: micSource,
+            style: function (feature) {
+              micStyle.getText().setText([` ${feature.get("text")}`, ""]);
+              return micStyle;
+            },
+          });
+
+          soundSource = new ol.source.Vector();
+          soundLayer = new ol.layer.Vector({
+            source: soundSource,
+            style: function (feature) {
+              soundStyle.getText().setText([` ${feature.get("text")}`, ""]);
+              return soundStyle;
+            },
+          });
+
+          map.addLayer(micLayer);
+          map.addLayer(soundLayer);
+        }
+
+        let pingLayers = [];
+
+        function pingCircle(lat, lon, duration, noAnimation = false) {
+          const radiusStart = 0;
+          const radiusEnd = 500000; // 500km
+          const speedOfSound = 343;
+
+          const computedDuration = (radiusEnd / speedOfSound) * 1000;
+          const hasCustomDuration = duration !== undefined;
+          const animationDuration = hasCustomDuration
+            ? duration
+            : computedDuration;
+
+          const point = ol.proj.fromLonLat([lon, lat]);
+          const start = Date.now();
+
+          // const circleRadius = noAnimation ? radiusEnd : radiusStart;
+          const circleRadius = noAnimation
+            ? Math.min(speedOfSound * (duration / 1000), radiusEnd)
+            : radiusStart;
+
+          const pingFeature = new ol.Feature(
+            new ol.geom.Circle(point, circleRadius)
+          );
+
+          const pingLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({ features: [pingFeature] }),
+            style: function (feature) {
+              const geometry = feature.getGeometry();
+              const radius = geometry.getRadius();
+              return new ol.style.Style({
+                fill: new ol.style.Fill({
+                  color: "rgba(255,0,0,0.2)",
+                }),
+                stroke: new ol.style.Stroke({
+                  color: "red",
+                  width: 2,
+                }),
+                image: new ol.style.Circle({
+                  radius: radius / 5000,
+                  fill: new ol.style.Fill({ color: "red" }),
+                }),
+              });
+            },
+          });
+
+          map.addLayer(pingLayer);
+          pingLayers.push(pingLayer); // If you're tracking layers
+
+          if (!noAnimation) {
+            function animate() {
+              const elapsed = Date.now() - start;
+              const progress = elapsed / computedDuration;
+
+              const radius =
+                radiusStart + (radiusEnd - radiusStart) * Math.min(progress, 1);
+              pingFeature.getGeometry().setRadius(radius);
+
+              if (elapsed < animationDuration) {
+                requestAnimationFrame(animate);
+              } else {
+                if (hasCustomDuration && progress < 1) {
+                  const cappedRadius =
+                    radiusStart +
+                    (radiusEnd - radiusStart) *
+                      (animationDuration / computedDuration);
+                  pingFeature.getGeometry().setRadius(cappedRadius);
+                }
+
+                if (!hasCustomDuration) {
+                  map.removeLayer(pingLayer);
+                }
+              }
+            }
+
+            animate();
+          }
+        }
+
+        function clearMap() {
+          micSource.clear(); // Clear features from the source
+          soundSource.clear();
+          microphones = [];
+          soundEventTimestamps = {};
+          pingLayers.forEach((layer) => map.removeLayer(layer));
+          pingLayers = [];
+          soundLat = 0;
+          soundLon = 0;
+        }
+
+        function sendEvent(event) {
+          fetch("/data", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(event),
+          });
+        }
+
+        function listEvents() {
+          fetch("/data")
+            .then((response) => response.json())
+            .then((events) => {
+              console.log("Events:", events);
+            });
+        }
+
+        function calculateArrivalTime(micLat, micLon, soundLat, soundLon) {
+          const distance = haversineDistance(
+            micLat,
+            micLon,
+            soundLat,
+            soundLon
+          );
+          const speedOfSound = 343; // m/s
+          const time = distance / speedOfSound;
+          return time; // seconds
+        }
+
+        // Function to calculate the distance between two coordinates using the Haversine formula
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+          const R = 6371000; // Radius of the Earth in meters
+          const dLat = (lat2 - lat1) * (Math.PI / 180);
+          const dLon = (lon2 - lon1) * (Math.PI / 180);
+          const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * (Math.PI / 180)) *
+              Math.cos(lat2 * (Math.PI / 180)) *
+              Math.sin(dLon / 2) *
+              Math.sin(dLon / 2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          const distance = R * c; // Distance in meters
+          return distance;
+        }
+
+        function estimateLocation(micData) {
+          // Calculate the speed of sound based on temperature
+          const speedOfSound = 331.5 + 0.6 * temperature;
+
+          // Calculate the distances between microphones
+          for (let i = 0; i < micData.length; i++) {
+            for (let j = i + 1; j < micData.length; j++) {
+              const distBetweenMics = haversineDistance(
+                micData[i].latitude,
+                micData[i].longitude,
+                micData[j].latitude,
+                micData[j].longitude
+              );
+              // Calculate the time difference of arrival (TDOA)
+              const tdoa = distBetweenMics / speedOfSound;
+              // You would need more complex algorithms to solve for the sound source location
+              // This is a simplified example
+            }
+          }
+          // Simplified averaging of the microphone coordinates as a placeholder
+          let avgLat = 0;
+          let avgLon = 0;
+          for (const mic of micData) {
+            avgLat += mic.latitude;
+            avgLon += mic.longitude;
+          }
+          avgLat /= micData.length;
+          avgLon /= micData.length;
+
+          return {
+            latitude: avgLat,
+            longitude: avgLon,
+          };
+        }
+
+        // function addManualSoundSource() {
+
+        // }
+
+        function simulateSound() {
+          if (microphones.length < 3) {
+            alert("Please place at least 3 microphones.");
+            return;
+          }
+
+          // Calculate and display arrival times for each microphone
+          let measurements = {};
+          let smallestArrivalTime = Infinity;
+          let arrivalData = [];
+
+          console.log(microphones);
+          for (let mic of microphones) {
+            console.log(
+              `Calculating arrival time for microphone ${mic.id} at (${mic.latitude}, ${mic.longitude})`
+            );
+            let arrivalTime = calculateArrivalTime(
+              mic.latitude,
+              mic.longitude,
+              soundLat,
+              soundLon
+            );
+
+            console.log(
+              `Microphone ${mic.id} at (${mic.latitude}, ${
+                mic.longitude
+              }) will receive sound at ${arrivalTime.toFixed(2)} seconds`
+            );
+            if (arrivalTime < smallestArrivalTime) {
+              smallestArrivalTime = arrivalTime;
+            }
+            let timeDifference = arrivalTime - smallestArrivalTime;
+            measurements[mic.id] = new Measurement(mic, timeDifference);
+            console.log(
+              `Microphone ${
+                mic.id
+              } registered time difference of arrival of ${timeDifference.toFixed(
+                2
+              )} seconds`
+            );
+
+            arrivalData.push({
+              id: mic.id,
+              lat: mic.latitude,
+              lon: mic.longitude,
+              arrivalTime: arrivalTime,
+              timeDifference: timeDifference,
+            });
+          }
+
+          console.log("Measurements:", measurements);
+          console.log("Arrival Data:", arrivalData);
+          // TAURI
+          // pingCircle(soundLat, soundLon);
+
+          arrivalData.forEach((entry) => {
+            const { lat, lon, arrivalTime, timeDifference } = entry;
+
+            const durationMs = arrivalTime * 2000;
+            console.log("durMs:" + durationMs);
+
+            // setTimeout(() => {
+            //   pingCircle(lat, lon, durationMs);
+            // }, delayMs);
+            pingCircle(lat, lon, durationMs, true);
+            pingCircle(lat, lon, durationMs, false);
+          });
+
+          ///////////////////////////
+          // calculateSourceLocation(measurements);
+
+          // const estimatedLocation = estimateLocation(microphones);
+
+          // // Create a feature for the estimated location
+          // const calculatedFeature = new ol.Feature({
+          //     text: "calculation",
+          //     geometry: new ol.geom.Point(ol.proj.fromLonLat([estimatedLocation.longitude, estimatedLocation.latitude])),
+          // });
+
+          // // Add the feature to the sound source layer
+          // soundSource.addFeature(calculatedFeature);
+
+          // alert(`Sound simulated at: ${soundLat.toFixed(2)}, ${soundLon.toFixed(2)}\nCheck console for arrival times.`);
+        }
+
+        window.clapThreshold = 50;
+        window.micAmplitude = 0;
+        let zeroTime = null;
+
+        function initDetection(callback) {
+          navigator.mediaDevices
+            .getUserMedia({ audio: true })
+            .then((stream) => {
+              const audioContext = new AudioContext();
+              const microphoneStream =
+                audioContext.createMediaStreamSource(stream);
+              const analyser = audioContext.createAnalyser();
+              microphoneStream.connect(analyser);
+              analyser.fftSize = 4096;
+
+              const smoothingFactor = 0.5;
+
+              const bufferlength = analyser.frequencyBinCount;
+              const frequencyData = new Uint8Array(bufferlength);
+
+              const SILENCE_DURATION = 1000;
+
+              let isPrintingLine = false;
+              let smoothedRMS = 0;
+
+              let isFirstClapDetected = false;
+              let firstClapTS;
+
+              function listenToMic() {
+                analyser.getByteFrequencyData(frequencyData);
+                const rms = calculateRMS(frequencyData);
+
+                // Update the global amplitude variable
+                window.micAmplitude = rms;
+
+                // smoothedRMS = smoothedRMS * smoothingFactor + rms * (1 - smoothingFactor);
+
+                if (!isFirstClapDetected && rms > window.clapThreshold) {
+                  isFirstClapDetected = true;
+                  firstClapTS = Date.now();
+                  console.log(
+                    "Clap detected at index:",
+                    firstClapTS,
+                    "RMS:",
+                    rms
+                  );
+                  console.log("—————————————————————————————————————————————");
+                }
+
+                // if (smoothedRMS > clapThreshold) {
+                if (rms > window.clapThreshold) {
+                  isPrintingLine = false;
+                  //console.log("Data:", rms + "|" + getMilitaryUTC() + '|' + calcTimeFromFirst());
+                }
+
+                // if (smoothedRMS <= clapThreshold && !isPrintingLine) {
+                if (rms <= window.clapThreshold && !isPrintingLine) {
+                  // Sound below threshold and line hasn't been printed yet
+                  console.log("—————————————————————————————————————————————"); // Print your line
+                  callback();
+                  isPrintingLine = true;
+                  highestRMS = 0;
+                  highestRMSIndex = -1;
+                  rmsValues = [];
+                }
+
+                requestAnimationFrame(listenToMic);
+              }
+
+              listenToMic();
+
+              function getMilitaryUTC() {
+                const now = Date.now();
+                const date = new Date(now);
+
+                const hours = date.getHours();
+                const minutes = date.getMinutes();
+                const seconds = date.getSeconds();
+                const milliseconds = date.getMilliseconds();
+
+                // Format with leading zeros
+                const formattedHours = String(hours).padStart(2, "0");
+                const formattedMinutes = String(minutes).padStart(2, "0");
+                const formattedSeconds = String(seconds).padStart(2, "0");
+                const formattedMilliseconds = String(milliseconds).padStart(
+                  3,
+                  "0"
+                ); // Pad to 3 digits for milliseconds
+
+                return `${formattedHours}:${formattedMinutes}:${formattedSeconds}${formattedMilliseconds}`;
+              }
+
+              function calculateRMS(dataArray) {
+                let sumOfSquares = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                  sumOfSquares += dataArray[i] * dataArray[i];
+                }
+                return Math.sqrt(sumOfSquares / dataArray.length);
+              }
+
+              function calcTimeFromFirst() {
+                return Date.now() - firstClapTS;
+              }
+            })
+            .catch((error) => {
+              console.error("Error getting user media:", error);
+            });
+        }
+
+        const vuSlider = document.getElementById("clap-threshold");
+
+        function updateVUMeter() {
+          const vuLevel = document.querySelector(".vu-level");
+          const thresholdLine = document.querySelector(".threshold-line");
+          const threshold = window.clapThreshold;
+          const amplitude = window.micAmplitude;
+
+          const percentage = Math.min((amplitude / vuSlider.max) * 100, 100);
+          vuLevel.style.width = `${percentage}%`;
+
+          const thresholdPercentage = (threshold / vuSlider.max) * 100;
+          thresholdLine.style.left = `${thresholdPercentage}%`;
+        }
+
+        function animateVUMeter() {
+          updateVUMeter();
+          requestAnimationFrame(animateVUMeter);
+        }
+
+        document
+          .getElementById("clap-threshold")
+          .addEventListener("input", function (e) {
+            const value = e.target.value;
+            document.getElementById("threshold-value").textContent = value;
+            window.clapThreshold = parseInt(value);
+          });
+
+        initMap();
+
+        map.on("click", function (evt) {
+          const coords = ol.proj.transform(
+            evt.coordinate,
+            "EPSG:3857",
+            "EPSG:4326"
+          );
+
+          if (soundLat == 0 && soundLon == 0) {
+            soundLat = coords[1];
+            soundLon = coords[0];
+            // Create a feature for the estimated location
+            const sourceFeature = new ol.Feature({
+              text: "source",
+              geometry: new ol.geom.Point(
+                ol.proj.fromLonLat([soundLon, soundLat])
+              ),
+            });
+
+            // Add the feature to the sound source layer
+            soundSource.addFeature(sourceFeature);
+          } else {
+            // Prompt for mic ID
+            // const micId = prompt("Enter Microphone ID:");
+            const micId = "Mic " + (microphones.length + 1);
+            if (micId) {
+              const mic = {
+                id: micId,
+                latitude: coords[1],
+                longitude: coords[0],
+              };
+              microphones.push(mic);
+              // Create a feature for the microphone
+              const feature = new ol.Feature({
+                text: micId,
+                geometry: new ol.geom.Point(
+                  ol.proj.fromLonLat([mic.longitude, mic.latitude])
+                ),
+              });
+
+              // Add the feature to the source
+              micSource.addFeature(feature);
+            }
+          }
+        });
+
+        animateVUMeter();
+        initDetection(function () {
+          console.log("clap detected");
+          if (!zeroTime) {
+            zeroTime = Date.now();
+          }
+          const relTime = Date.now() - zeroTime;
+          sendEvent(relTime);
+        });
+        document
+          .getElementById("clear-map-button")
+          .addEventListener("click", clearMap);
+        document
+          .getElementById("simulate-sound-button")
+          .addEventListener("click", simulateSound);
+        // document
+        //   .getElementById("sound-source-button")
+        //   .addEventListener("click", addManualSoundSource)
+      });
+
+      /**
+       * JavaScript port of the multilateration library
+       * Based on the original Rust implementation
+       */
+
+      /**
+       * Represents a point in n-dimensional space
+       */
+      class Point {
+        constructor(coordinates) {
+          this.coordinates = coordinates;
+        }
+      }
+
+      /**
+       * Represents a measurement with a known point and distance
+       */
+      class BetterMeasurement {
+        constructor(point, distance) {
+          this.point = point;
+          this.distance = distance;
+        }
+      }
+
+      /**
+       * Validates that all measurements have the same dimensions
+       * @param {Array<BetterMeasurement>} measurements - Array of measurements
+       * @throws {Error} If validation fails
+       */
+      function validateMeasurements(measurements) {
+        if (!measurements || measurements.length === 0) {
+          throw new Error("Measurements cannot be empty");
+        }
+
+        const pointDimensions = measurements.map(
+          (m) => m.point.coordinates.length
+        );
+        const minLength = Math.min(...pointDimensions);
+        const maxLength = Math.max(...pointDimensions);
+
+        if (minLength !== maxLength) {
+          throw new Error("All points must have the same dimensions");
+        }
+        if (minLength < 1) {
+          throw new Error("Points must contain at least one dimension");
+        }
+      }
+
+      /**
+       * Function to estimate an initial point from measurements
+       * @param {Array<BetterMeasurement>} measurements - Array of measurements
+       * @returns {Point} Initial estimated point
+       */
+      function estimateInitialPoint(measurements) {
+        const positionDimensions = measurements[0].point.coordinates.length;
+        const numberOfMeasurements = measurements.length;
+
+        const initialPosition = new Array(positionDimensions).fill(0);
+
+        for (let i = 0; i < numberOfMeasurements; i++) {
+          for (let j = 0; j < positionDimensions; j++) {
+            initialPosition[j] += measurements[i].point.coordinates[j];
+          }
+        }
+
+        for (let i = 0; i < positionDimensions; i++) {
+          initialPosition[i] /= numberOfMeasurements;
+        }
+
+        return new Point(initialPosition);
+      }
+
+      /**
+       * Calculates the error function for a given position
+       * @param {Array<number>} position - Current position estimate
+       * @param {Array<BetterMeasurement>} measurements - Array of measurements
+       * @returns {Array<number>} Array of errors
+       */
+      function calculateErrors(position, measurements) {
+        return measurements.map((measurement) => {
+          let squaredDistance = 0;
+          for (let j = 0; j < position.length; j++) {
+            squaredDistance += Math.pow(
+              position[j] - measurement.point.coordinates[j],
+              2
+            );
+          }
+          return squaredDistance - Math.pow(measurement.distance, 2);
+        });
+      }
+
+      /**
+       * Calculates the Jacobian matrix for the optimization
+       * @param {Array<number>} position - Current position estimate
+       * @param {Array<BetterMeasurement>} measurements - Array of measurements
+       * @returns {Array<Array<number>>} Jacobian matrix
+       */
+      function calculateJacobian(position, measurements) {
+        const matrix = [];
+
+        for (let i = 0; i < measurements.length; i++) {
+          const row = [];
+          for (let j = 0; j < position.length; j++) {
+            row.push(
+              2 * position[j] - 2 * measurements[i].point.coordinates[j]
+            );
+          }
+          matrix.push(row);
+        }
+
+        return matrix;
+      }
+
+      /**
+       * Transposes a matrix
+       * @param {Array<Array<number>>} matrix - Input matrix
+       * @returns {Array<Array<number>>} Transposed matrix
+       */
+      function transposeMatrix(matrix) {
+        const rows = matrix.length;
+        const cols = matrix[0].length;
+        const result = Array(cols)
+          .fill()
+          .map(() => Array(rows).fill(0));
+
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) {
+            result[j][i] = matrix[i][j];
+          }
+        }
+
+        return result;
+      }
+
+      /**
+       * Multiplies two matrices
+       * @param {Array<Array<number>>} a - First matrix
+       * @param {Array<Array<number>>} b - Second matrix
+       * @returns {Array<Array<number>>} Result matrix
+       */
+      function multiplyMatrices(a, b) {
+        const rowsA = a.length;
+        const colsA = a[0].length;
+        const colsB = b[0].length;
+        const result = Array(rowsA)
+          .fill()
+          .map(() => Array(colsB).fill(0));
+
+        for (let i = 0; i < rowsA; i++) {
+          for (let j = 0; j < colsB; j++) {
+            let sum = 0;
+            for (let k = 0; k < colsA; k++) {
+              sum += a[i][k] * b[k][j];
+            }
+            result[i][j] = sum;
+          }
+        }
+
+        return result;
+      }
+
+      /**
+       * Multiplies a matrix by a vector
+       * @param {Array<Array<number>>} matrix - Input matrix
+       * @param {Array<number>} vector - Input vector
+       * @returns {Array<number>} Result vector
+       */
+      function multiplyMatrixVector(matrix, vector) {
+        const rows = matrix.length;
+        const cols = matrix[0].length;
+        const result = new Array(rows).fill(0);
+
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) {
+            result[i] += matrix[i][j] * vector[j];
+          }
+        }
+
+        return result;
+      }
+
+      /**
+       * Adds lambda to the diagonal of a matrix
+       * @param {Array<Array<number>>} matrix - Input matrix
+       * @param {number} lambda - Value to add to diagonal
+       * @returns {Array<Array<number>>} Modified matrix
+       */
+      function addLambdaToDiagonal(matrix, lambda) {
+        const result = matrix.map((row) => [...row]);
+        const size = Math.min(result.length, result[0].length);
+
+        for (let i = 0; i < size; i++) {
+          result[i][i] += lambda;
+        }
+
+        return result;
+      }
+
+      /**
+       * Solves a linear system using Gaussian elimination
+       * @param {Array<Array<number>>} A - Coefficient matrix
+       * @param {Array<number>} b - Right-hand side vector
+       * @returns {Array<number>} Solution vector
+       */
+      function solveLinearSystem(A, b) {
+        const n = A.length;
+        const augmentedMatrix = A.map((row, i) => [...row, b[i]]);
+
+        // Gaussian elimination (forward elimination)
+        for (let i = 0; i < n; i++) {
+          // Find pivot
+          let maxRow = i;
+          for (let j = i + 1; j < n; j++) {
+            if (
+              Math.abs(augmentedMatrix[j][i]) >
+              Math.abs(augmentedMatrix[maxRow][i])
+            ) {
+              maxRow = j;
+            }
+          }
+
+          // Swap rows
+          if (maxRow !== i) {
+            [augmentedMatrix[i], augmentedMatrix[maxRow]] = [
+              augmentedMatrix[maxRow],
+              augmentedMatrix[i],
+            ];
+          }
+
+          // Singular matrix check
+          if (Math.abs(augmentedMatrix[i][i]) < 1e-10) {
+            throw new Error("Matrix is singular, cannot solve system");
+          }
+
+          // Eliminate below
+          for (let j = i + 1; j < n; j++) {
+            const factor = augmentedMatrix[j][i] / augmentedMatrix[i][i];
+            for (let k = i; k <= n; k++) {
+              augmentedMatrix[j][k] -= factor * augmentedMatrix[i][k];
+            }
+          }
+        }
+
+        // Back substitution
+        const x = new Array(n).fill(0);
+        for (let i = n - 1; i >= 0; i--) {
+          x[i] = augmentedMatrix[i][n];
+          for (let j = i + 1; j < n; j++) {
+            x[i] -= augmentedMatrix[i][j] * x[j];
+          }
+          x[i] /= augmentedMatrix[i][i];
+        }
+
+        return x;
+      }
+
+      /**
+       * Subtracts two vectors
+       * @param {Array<number>} a - First vector
+       * @param {Array<number>} b - Second vector
+       * @returns {Array<number>} Result vector
+       */
+      function subtractVectors(a, b) {
+        return a.map((val, i) => val - b[i]);
+      }
+
+      /**
+       * Calculates the dot product of two vectors
+       * @param {Array<number>} a - First vector
+       * @param {Array<number>} b - Second vector
+       * @returns {number} Dot product
+       */
+      function dotProduct(a, b) {
+        return a.reduce((sum, val, i) => sum + val * b[i], 0);
+      }
+
+      /**
+       * Performs multilateration to find a point based on distance measurements
+       * @param {Array<BetterMeasurement>} measurements - Array of measurements
+       * @returns {Point} The calculated position
+       * @throws {Error} If calculation fails
+       */
+      function multilaterate(measurements) {
+        validateMeasurements(measurements);
+
+        const initialPoint = estimateInitialPoint(measurements);
+        let currentPosition = [...initialPoint.coordinates];
+
+        const maxIterations = 1000;
+        const initialLambda = 0.01;
+        const lambdaFactor = 10;
+
+        let lambda = initialLambda;
+        let lastError = Number.MAX_VALUE;
+
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
+          // Calculate current error values
+          const errors = calculateErrors(currentPosition, measurements);
+          const currentError = Math.sqrt(
+            errors.reduce((sum, err) => sum + err * err, 0)
+          );
+
+          // Check if we're done
+          if (currentError < 1e-10) {
+            return new Point(currentPosition);
+          }
+
+          // If error increased, increase lambda and try again
+          if (currentError > lastError) {
+            lambda *= lambdaFactor;
+            continue;
+          }
+
+          // Calculate Jacobian
+          const jacobian = calculateJacobian(currentPosition, measurements);
+          const jacobianT = transposeMatrix(jacobian);
+
+          // Calculate JTJ + lambda*I
+          const JTJ = multiplyMatrices(jacobianT, jacobian);
+          const damped = addLambdaToDiagonal(JTJ, lambda);
+
+          // Calculate JTr
+          const JTr = multiplyMatrixVector(jacobianT, errors);
+
+          try {
+            // Solve (JTJ + lambda*I) * delta = JTr
+            const delta = solveLinearSystem(damped, JTr);
+
+            // Update position
+            currentPosition = subtractVectors(currentPosition, delta);
+
+            // Update lambda
+            lambda /= lambdaFactor;
+            lastError = currentError;
+          } catch (error) {
+            lambda *= lambdaFactor;
+          }
+        }
+
+        return new Point(currentPosition);
+      }
+
+      // Create measurements
+      const measurements = [
+        new BetterMeasurement(new Point([1.0, 1.0]), 1.0),
+        new BetterMeasurement(new Point([3.0, 1.0]), 1.0),
+        new BetterMeasurement(new Point([2.0, 2.0]), 1.0),
+      ];
+
+      try {
+        // Calculate position through multilateration
+        const result = multilaterate(measurements);
+        console.log("Coordinates:", result.coordinates);
+      } catch (error) {
+        console.error("Error:", error.message);
+      }
+
+      document
+        .getElementById("mic-id-save-button")
+        .addEventListener("click", saveMicId);
+      document
+        .getElementById("dev-offset")
+        .addEventListener("change", function (event) {
+          devOffset = parseInt(event.target.value);
+        });
+    </script>
+  </body>
+</html>
